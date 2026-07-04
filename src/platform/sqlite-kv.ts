@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { KVStore } from "./adapter.ts";
 
-const stateDir = (): string => {
+export const stateDir = (): string => {
     const override =
         process.env.DUCKLING_STATE_DIR ?? process.env.ENTE_HELPER_STATE_DIR;
     if (override) return override;

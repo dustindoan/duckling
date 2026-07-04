@@ -18,6 +18,13 @@
 // ente module evaluates. See ./platform/env.ts for why.
 import "./platform/env.ts";
 
+import {
+    cliLogin,
+    cliLogout,
+    cliLs,
+    cliUpload,
+    cliWhoami,
+} from "./cli.ts";
 import { installPlatformAdapter } from "./platform/install.ts";
 import { makeBunAdapter } from "./platform/bun-adapter.ts";
 import { Dispatcher } from "./rpc/dispatch.ts";
@@ -177,9 +184,15 @@ const main = async (): Promise<void> => {
         console.log("compiled to a single binary. No Electron.");
         console.log("");
         console.log("Usage:");
-        console.log("  duckling                           stdio JSON-RPC server (ndjson in/out)");
+        console.log("  duckling login [email]             interactive login (SRP; prompts for password)");
+        console.log("  duckling whoami                    account, file count, storage used");
+        console.log("  duckling ls                        list albums");
+        console.log("  duckling upload <path>... --album <name>");
+        console.log("                                     upload files/folders into an album");
+        console.log("  duckling logout                    forget the stored session");
         console.log("  duckling call <method> ['<json>']  invoke one RPC method, print the result");
         console.log("  duckling --list-methods            print known RPC methods");
+        console.log("  duckling                           stdio JSON-RPC server (ndjson in/out)");
         console.log("  duckling --version | --help");
         console.log("");
         console.log("Environment:");
@@ -192,9 +205,45 @@ const main = async (): Promise<void> => {
         for (const m of dispatcher.knownMethods()) console.log(m);
         return;
     }
-    if (args[0] === "call") {
-        await runCallVerb(dispatcher, args.slice(1));
-        return;
+    if (args.length > 0) {
+        // Human verbs: results on stdout, everything else on stderr. Same
+        // console rerouting as the stdio server so ente's info-level
+        // console.log can't pollute pipeable output.
+        console.log = (...a: unknown[]) => console.error(...a);
+        console.info = (...a: unknown[]) => console.error(...a);
+        try {
+            switch (args[0]) {
+                case "call":
+                    await runCallVerb(dispatcher, args.slice(1));
+                    return;
+                case "login":
+                    await cliLogin(dispatcher, args.slice(1));
+                    return;
+                case "logout":
+                    cliLogout();
+                    return;
+                case "whoami":
+                    await cliWhoami(dispatcher);
+                    return;
+                case "ls":
+                    await cliLs(dispatcher);
+                    return;
+                case "upload":
+                    await cliUpload(dispatcher, args.slice(1));
+                    return;
+                default:
+                    console.error(
+                        `duckling: unknown command "${args[0]}" — see duckling --help`,
+                    );
+                    process.exit(2);
+            }
+        } catch (e) {
+            // Verb-level failures read as one line, not a stack trace.
+            // (Genuine bugs still crash loudly via main().catch below.)
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`duckling ${args[0]}: ${msg}`);
+            process.exit(1);
+        }
     }
 
     await runStdioServer(dispatcher);
