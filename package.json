@@ -1,0 +1,44 @@
+{
+  "name": "duckling",
+  "version": "0.1.0",
+  "description": "Headless ente client — ente desktop's own upload + auth code, compiled to a single binary. CLI and stdio JSON-RPC.",
+  "private": true,
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "dev": "bun --preserve-symlinks run src/index.ts",
+    "build": "bun build --compile --preserve-symlinks --target=bun-darwin-arm64 src/index.ts --outfile dist/duckling",
+    "typecheck": "tsc --noEmit",
+    "smoke": "bun --preserve-symlinks run scripts/smoke.ts",
+    "link-ente": "bash scripts/link-ente.sh",
+    "postinstall": "bash scripts/link-ente.sh"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "bip39": "^3.1.0",
+    "bs58": "^6.0.0",
+    "comlink": "^4.4.2",
+    "dayjs": "^1.11.21",
+    "exifreader": "^4.39.1",
+    "fake-indexeddb": "^6.2.5",
+    "fast-srp-hap": "^2.0.4",
+    "file-type": "^22.0.1",
+    "heic-convert": "^2.1.0",
+    "idb": "^8.0.3",
+    "jszip": "^3.10.1",
+    "libsodium-wrappers-sumo": "^0.8.4",
+    "localforage": "^1.10.0",
+    "nanoid": "^5.1.11",
+    "uuid": "^14.0.0",
+    "zod": "^4.4.3",
+    "zxcvbn": "^4.4.2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/libsodium-wrappers-sumo": "^0.8.2",
+    "@types/node": "^25.9.1",
+    "@types/uuid": "^11.0.0",
+    "sharp": "^0.34.5",
+    "typescript": "^5.9.3"
+  }
+}

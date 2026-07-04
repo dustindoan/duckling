@@ -1,0 +1,62 @@
+{
+  "compilerOptions": {
+    // Environment
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "allowJs": true,
+    "types": ["bun"],
+
+    // Bundler mode
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+    "resolveJsonModule": true,
+
+    // preserveSymlinks: critical for the workspace-sibling strategy. Without
+    // this, Bun resolves `node_modules/ente-base` to its real path inside
+    // ~/Dev/personal/ente/, then resolves transitives (`ente-utils/array`
+    // from `libsodium.ts`) from THERE — where there's no node_modules. With
+    // it on, the importing file is treated as if it lived in our
+    // node_modules, so transitives resolve via our project root.
+    "preserveSymlinks": true,
+
+    // Strictness
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    // Path aliases.
+    //
+    // Strategy (decision-c, "workspace sibling"):
+    //
+    //   1. ente-* namespaces resolve via node_modules symlinks installed by
+    //      scripts/link-ente.sh — Bun/tsc find them through standard module
+    //      resolution. No path entries needed.
+    //   2. ente-base/electron runs UNMODIFIED against globalThis.electron,
+    //      which our platform/install.ts sets up. No alias needed.
+    //   3. ente-base/kv WILL need an alias (it imports `idb`, missing in
+    //      Bun). Adding it lazily when an accounts import first pulls it.
+    //   4. UI-only deps (react, MUI, Emotion, ente-contacts-web) get stubbed
+    //      to scripts/stubs/empty.ts because tsc walks types even into
+    //      unreachable code; Bun tree-shakes them out of the runtime bundle.
+    "baseUrl": ".",
+    "paths": {
+      "ente-contacts-web": ["./scripts/stubs/empty.ts"],
+      "ente-contacts-web/*": ["./scripts/stubs/empty.ts"],
+      "react": ["./scripts/stubs/empty.ts"],
+      "react/*": ["./scripts/stubs/empty.ts"],
+      "react-dom": ["./scripts/stubs/empty.ts"],
+      "react-dom/*": ["./scripts/stubs/empty.ts"],
+      "@mui/*": ["./scripts/stubs/empty.ts"],
+      "@emotion/*": ["./scripts/stubs/empty.ts"],
+      "@ffmpeg/ffmpeg": ["./src/platform/shims/ffmpeg-stub.ts"],
+      "localforage": ["./src/platform/shims/localforage.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+}
