@@ -18,6 +18,9 @@
 // ente module evaluates. See ./platform/env.ts for why.
 import "./platform/env.ts";
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import {
     cliLogin,
     cliLogout,
@@ -26,6 +29,7 @@ import {
     cliWhoami,
 } from "./cli.ts";
 import { installPlatformAdapter } from "./platform/install.ts";
+import { stateDir } from "./platform/sqlite-kv.ts";
 import { makeBunAdapter } from "./platform/bun-adapter.ts";
 import { Dispatcher } from "./rpc/dispatch.ts";
 import { registerAuthMethods } from "./rpc/methods/auth.ts";
@@ -144,6 +148,28 @@ const runCallVerb = async (
     // console.log must not interleave with the JSON result.
     console.log = (...args: unknown[]) => console.error(...args);
     console.info = (...args: unknown[]) => console.error(...args);
+
+    // Replay the stored session (if any) so authenticated methods work
+    // one-shot, same as the friendly verbs. Skipped for auth.* — login
+    // must not be preempted, and restore would be redundant.
+    if (!method.startsWith("auth.")) {
+        const sessionFile = join(stateDir(), "session.json");
+        if (existsSync(sessionFile)) {
+            const bundle = JSON.parse(
+                readFileSync(sessionFile, "utf8"),
+            ) as unknown;
+            const restored = await dispatcher.handle({
+                jsonrpc: "2.0",
+                id: 0,
+                method: "auth.restore",
+                params: bundle,
+            });
+            if ("error" in restored)
+                console.error(
+                    `call: stored session rejected (${restored.error.message}) — continuing unauthenticated`,
+                );
+        }
+    }
 
     const response = await dispatcher.handle({
         jsonrpc: "2.0",
