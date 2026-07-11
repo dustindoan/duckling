@@ -188,7 +188,15 @@ const runCallVerb = async (
             console.error(JSON.stringify(response.error.data, null, 2));
         process.exit(1);
     }
-    process.stdout.write(JSON.stringify(response.result, null, 2) + "\n");
+    // Await the flush: process.exit() discards whatever hasn't drained
+    // through the stdout pipe yet, which silently truncated results at
+    // 64 KB (one pipe buffer) — bit us on a 4k-file list_files.
+    await new Promise<void>((resolve) => {
+        process.stdout.write(
+            JSON.stringify(response.result, null, 2) + "\n",
+            () => resolve(),
+        );
+    });
     // Explicit exit: worker-pool children or open handles must not keep a
     // one-shot invocation alive.
     process.exit(0);

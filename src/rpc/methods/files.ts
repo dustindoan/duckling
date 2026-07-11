@@ -10,7 +10,10 @@ import {
     pullCollectionFiles,
     pullCollections,
 } from "ente-new/photos/services/collection";
-import { updateFileFileName } from "ente-new/photos/services/file";
+import {
+    updateFileFileName,
+    updateFilePublicMagicMetadata,
+} from "ente-new/photos/services/file";
 import { findIndexedFile, invalidateFileIndex } from "../file-index.ts";
 import { currentAdapter } from "../../platform/install.ts";
 import type { Dispatcher } from "../dispatch.ts";
@@ -121,5 +124,59 @@ export const registerFileMethods = (d: Dispatcher): void => {
         invalidateFileIndex(); // re-pulled the renamed file → refresh the index
         log.info(`files.rename: done fileID=${fileID}`);
         return { ok: true, fileID, collectionID, newName };
+    });
+
+    // Override a file's creation time via pubMagicMetadata.editedTime —
+    // ente's own "edit date" channel (fileCreationTime prefers editedTime
+    // over metadata.creationTime everywhere). Exists for repairing files
+    // whose capture date never made it into ente: formats that can't carry
+    // EXIF fall back to file mtime at upload, and an mtime of "export
+    // moment" permanently stamps them with the migration date.
+    d.register("files.set_creation_time", async (params) => {
+        const log = currentAdapter().log;
+        const { fileID, collectionID, creationTime } = (params ?? {}) as {
+            fileID?: number;
+            collectionID?: number;
+            /** Epoch MICROseconds (ente's metadata unit). */
+            creationTime?: number;
+        };
+        if (typeof fileID !== "number") {
+            throw new Error(
+                "files.set_creation_time: params.fileID (number) required",
+            );
+        }
+        if (typeof collectionID !== "number") {
+            throw new Error(
+                "files.set_creation_time: params.collectionID (number) required",
+            );
+        }
+        if (
+            typeof creationTime !== "number" ||
+            !Number.isFinite(creationTime) ||
+            creationTime <= 0
+        ) {
+            throw new Error(
+                "files.set_creation_time: params.creationTime (epoch µs) required",
+            );
+        }
+        log.info(
+            `files.set_creation_time: fileID=${fileID} collectionID=${collectionID} → ${creationTime}`,
+        );
+        const collections = await pullCollections();
+        await pullCollectionFiles(collections, undefined);
+        invalidateFileIndex();
+        const file = await findIndexedFile(collectionID, fileID);
+        if (!file) {
+            throw new Error(
+                `files.set_creation_time: file ${fileID} not in collection ${collectionID}`,
+            );
+        }
+        await updateFilePublicMagicMetadata(file, {
+            editedTime: creationTime,
+        });
+        await pullCollectionFiles(collections, undefined);
+        invalidateFileIndex();
+        log.info(`files.set_creation_time: done fileID=${fileID}`);
+        return { ok: true, fileID, collectionID, creationTime };
     });
 };
