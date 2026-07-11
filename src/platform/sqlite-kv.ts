@@ -30,6 +30,12 @@ export class SqliteKV implements KVStore {
         const dir = stateDir();
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
         this.db = new Database(path ?? dbPath());
+        // Two duckling processes may share this file (the CoralStack app's
+        // helper + a CLI invocation). bun:sqlite defaults to no busy
+        // timeout, so a concurrent write throws SQLITE_BUSY immediately;
+        // WAL + a generous busy_timeout makes cross-process sharing safe.
+        this.db.run("PRAGMA journal_mode = WAL");
+        this.db.run("PRAGMA busy_timeout = 5000");
         this.db.run(`
             CREATE TABLE IF NOT EXISTS kv (
                 key TEXT PRIMARY KEY,

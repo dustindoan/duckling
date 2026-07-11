@@ -226,6 +226,14 @@ export const registerUploadMethods = (d: Dispatcher): void => {
         if (!stat.isFile()) {
             throw new Error(`upload.put_file: not a regular file: ${path}`);
         }
+        // Pre-flight the zero-byte case instead of letting ente's uploader
+        // discover it: its zeroSize path leaves a dangling stream whose
+        // async TypeError kills the whole process a beat after the result
+        // is returned (observed on Bun 1.3.14). Same answer, no landmine.
+        if (stat.size === 0) {
+            log.info(`upload.put_file: zero-byte file ${fileNameOverride ?? path}`);
+            return { type: "zeroSize" };
+        }
         // Prefer the explicit override; otherwise infer from the path.
         // The override matters when bytes were streamed in via a staged
         // temp file whose name has nothing to do with the user's
@@ -392,6 +400,11 @@ export const registerUploadMethods = (d: Dispatcher): void => {
             throw new Error(
                 `upload.put_live_photo: not a regular file: ${motionPath}`,
             );
+        }
+        // Same zero-byte pre-flight as put_file (ente's zeroSize path
+        // detonates asynchronously; see the comment there).
+        if (stillStat.size === 0 || motionStat.size === 0) {
+            return { type: "zeroSize" };
         }
 
         const stillName =

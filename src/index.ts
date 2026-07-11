@@ -118,6 +118,9 @@ const handleLine = async (
         return;
     }
     const response = await dispatcher.handle(req);
+    // JSON-RPC notifications (no id) execute but get no response — writing
+    // one anyway would emit an id-less object that strict clients misparse.
+    if (req.id === undefined) return;
     process.stdout.write(JSON.stringify(response) + "\n");
 };
 
