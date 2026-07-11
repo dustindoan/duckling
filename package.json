@@ -1,6 +1,6 @@
 {
   "name": "duckling",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Headless ente client — ente desktop's own upload + auth code, compiled to a single binary. CLI and stdio JSON-RPC.",
   "private": true,
   "type": "module",

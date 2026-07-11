@@ -44,7 +44,7 @@ import {
     type JsonRpcRequest,
 } from "./rpc/types.ts";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const buildDispatcher = (): Dispatcher => {
     const d = new Dispatcher();

@@ -89,6 +89,14 @@ After pulling upstream ente, re-run `bun run link-ente`, then
 `bun run smoke` (needs `ENTE_EMAIL`/`ENTE_PASSWORD`) to catch drift before
 it bites.
 
+## Testing
+
+`bun test` runs the offline tier (CLI surface, exit codes, stdio JSON-RPC
+conformance). `DUCKLING_LIVE_TESTS=1 bun test` adds the live tier against
+your museum — Live Photo pairing, a download crypto round-trip
+(byte-identical content back), rename/trash — using an isolated copy of
+your session and a throwaway album.
+
 ## Environment
 
 | Variable | Default | Purpose |
@@ -96,3 +104,9 @@ it bites.
 | `DUCKLING_ENDPOINT` | `https://api.ente.io` | Museum API endpoint |
 | `DUCKLING_STATE_DIR` | `~/.duckling` | Session/token storage |
 | `DUCKLING_FFMPEG_PATH` | sibling of binary, then `PATH` | ffmpeg for video metadata |
+
+## License
+
+AGPL-3.0 — required, not optional: duckling compiles ente's AGPL-licensed
+client code into its binary. Source for both halves is public (this repo +
+[ente-io/ente](https://github.com/ente-io/ente)).
