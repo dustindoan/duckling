@@ -9,10 +9,13 @@
 // Stays a stub until we have a smoke import to test against; expanding it
 // is part of the "wire ente packages" task.
 
-// Re-export the Electron interface type as ente expects.
-// Pointing at the sibling-checkout type avoids divergence.
-export type { Electron } from "../../../../ente/web/packages/base/types/ipc.ts";
-import type { Electron } from "../../../../ente/web/packages/base/types/ipc.ts";
+// Re-export the Electron interface type as ente expects. Resolved through
+// the linked node_modules/ente-base package (see scripts/link-ente.sh) —
+// NOT a relative filesystem escape, which would hardcode where the ente
+// checkout lives relative to this repo (broke in CI, and for anyone whose
+// checkout isn't literally at ../ente).
+export type { Electron } from "ente-base/types/ipc";
+import type { Electron } from "ente-base/types/ipc";
 
 export const ensureElectron = (): Electron => {
     const et = (globalThis as { electron?: Electron }).electron;
