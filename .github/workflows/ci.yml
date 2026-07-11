@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # duckling consumes ente's web packages in place (no vendoring); CI
+      # clones the sibling the same way a developer does.
+      - uses: actions/checkout@v4
+        with:
+          repository: ente-io/ente
+          path: ente-upstream
+          sparse-checkout: web/packages
+      - uses: oven-sh/setup-bun@v2
+      - name: install + link ente packages
+        run: ENTE_ROOT="$GITHUB_WORKSPACE/ente-upstream/web/packages" bun install
+      - name: src-level typecheck gate
+        run: |
+          errors=$(bun run typecheck 2>&1 | grep "error TS" | grep -cv "node_modules" || true)
+          echo "src-level errors: $errors"
+          test "$errors" -le 1  # the one known unused @ts-expect-error
+      - run: bun run build
+      - name: offline test tier
+        run: bun test test/cli.test.ts

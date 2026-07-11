@@ -29,6 +29,9 @@ const REAL_SESSION = join(
     "session.json",
 );
 const LIVE = process.env.DUCKLING_LIVE_TESTS === "1" && existsSync(REAL_SESSION);
+// Unique pixels per run: ente dedups by content hash account-wide, so a
+// deterministic fixture matches its own previous run forever.
+const randChan = () => Math.floor(Math.random() * 256);
 const TEST_ALBUM = "duckling-cli-test";
 
 if (!existsSync(BIN)) throw new Error("build dist/duckling first");
@@ -233,7 +236,7 @@ describe.if(LIVE)("live museum (isolated session copy)", () => {
                 width: 64,
                 height: 64,
                 channels: 3,
-                background: { r: 200, g: 30, b: 90 },
+                background: { r: randChan(), g: randChan(), b: randChan() },
             },
         })
             .jpeg()
@@ -261,6 +264,161 @@ describe.if(LIVE)("live museum (isolated session copy)", () => {
         expect(r.stdout).toContain("✗");
         expect(r.stdout).toContain("2 failed");
     }, 90_000);
+
+    test(
+        "live photo pair uploads as one ente livePhoto",
+        async () => {
+            const sharp = (await import("sharp")).default;
+            const still = join(fixtures, "IMG_9001.jpg");
+            const motion = join(fixtures, "IMG_9001.mov");
+            await sharp({
+                create: {
+                    width: 320,
+                    height: 240,
+                    channels: 3,
+                    background: { r: randChan(), g: randChan(), b: randChan() },
+                },
+            })
+                .jpeg()
+                .toFile(still);
+            const ff = Bun.spawnSync([
+                "ffmpeg", "-y", "-f", "lavfi", "-i",
+                "color=c=red:s=320x240:d=1", "-pix_fmt", "yuv420p", motion,
+            ], { stdout: "ignore", stderr: "ignore" });
+            expect(ff.exitCode).toBe(0);
+
+            const created = run(
+                ["call", "collections.create", `{"name":"${TEST_ALBUM}-pair"}`],
+                { state },
+            );
+            expect(created.exitCode).toBe(0);
+            const collectionID = (
+                JSON.parse(created.stdout) as { id: number }
+            ).id;
+
+            const r = run(
+                [
+                    "call",
+                    "upload.put_live_photo",
+                    JSON.stringify({
+                        stillPath: still,
+                        motionPath: motion,
+                        collectionID,
+                    }),
+                ],
+                { state },
+            );
+            expect(r.exitCode).toBe(0);
+            const result = JSON.parse(r.stdout) as {
+                type: string;
+                file?: { id: number };
+            };
+            expect(result.type).toMatch(/^upload/);
+            expect(result.file?.id).toBeGreaterThan(0);
+
+            // One file entry in the album — not two halves.
+            const listed = run(
+                [
+                    "call",
+                    "collections.list_files",
+                    `{"id":${collectionID}}`,
+                ],
+                { state },
+            );
+            const files = (
+                JSON.parse(listed.stdout) as {
+                    files: { name: string; fileType: number }[];
+                }
+            ).files;
+            expect(files).toHaveLength(1);
+            expect(files[0]!.name).toBe("IMG_9001.jpg");
+            run(["call", "collections.delete", `{"id":${collectionID}}`], {
+                state,
+            });
+        },
+        120_000,
+    );
+
+    test(
+        "download round-trip returns byte-identical content (crypto integrity)",
+        async () => {
+            const sharp = (await import("sharp")).default;
+            const original = join(fixtures, "roundtrip.jpg");
+            await sharp({
+                create: {
+                    width: 200,
+                    height: 200,
+                    channels: 3,
+                    background: { r: randChan(), g: randChan(), b: randChan() },
+                },
+            })
+                .jpeg({ quality: 92 })
+                .toFile(original);
+
+            const created = run(
+                ["call", "collections.create", `{"name":"${TEST_ALBUM}-rt"}`],
+                { state },
+            );
+            const collectionID = (
+                JSON.parse(created.stdout) as { id: number }
+            ).id;
+            const up = run(
+                [
+                    "call",
+                    "upload.put_file",
+                    JSON.stringify({ path: original, collectionID }),
+                ],
+                { state },
+            );
+            expect(up.exitCode).toBe(0);
+            const fileID = (
+                JSON.parse(up.stdout) as { file: { id: number } }
+            ).file.id;
+
+            const down = run(
+                [
+                    "call",
+                    "download.get_file",
+                    JSON.stringify({ fileID, collectionID }),
+                ],
+                { state },
+            );
+            expect(down.exitCode).toBe(0);
+            const { path: downloadedPath } = JSON.parse(down.stdout) as {
+                path: string;
+            };
+            const a = new Uint8Array(await Bun.file(original).arrayBuffer());
+            const b = new Uint8Array(
+                await Bun.file(downloadedPath).arrayBuffer(),
+            );
+            expect(b.length).toBe(a.length);
+            expect(Buffer.from(b).equals(Buffer.from(a))).toBe(true);
+
+            // rename + trash smoke on the same file.
+            const renamed = run(
+                [
+                    "call",
+                    "files.rename",
+                    JSON.stringify({
+                        fileID,
+                        collectionID,
+                        newName: "renamed.jpg",
+                    }),
+                ],
+                { state },
+            );
+            expect(renamed.exitCode).toBe(0);
+            const trashed = run(
+                ["call", "files.trash", JSON.stringify({ fileID, collectionID })],
+                { state },
+            );
+            expect(trashed.exitCode).toBe(0);
+            run(["call", "collections.delete", `{"id":${collectionID}}`], {
+                state,
+            });
+        },
+        120_000,
+    );
 
     test("two concurrent instances sharing one state dir both succeed", async () => {
         const spawn = () =>

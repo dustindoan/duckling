@@ -34,8 +34,11 @@ export class SqliteKV implements KVStore {
         // helper + a CLI invocation). bun:sqlite defaults to no busy
         // timeout, so a concurrent write throws SQLITE_BUSY immediately;
         // WAL + a generous busy_timeout makes cross-process sharing safe.
-        this.db.run("PRAGMA journal_mode = WAL");
+        // busy_timeout FIRST: the WAL switch itself takes an exclusive
+        // lock, so two processes creating a fresh db concurrently collide
+        // on the journal_mode pragma unless the timeout is already set.
         this.db.run("PRAGMA busy_timeout = 5000");
+        this.db.run("PRAGMA journal_mode = WAL");
         this.db.run(`
             CREATE TABLE IF NOT EXISTS kv (
                 key TEXT PRIMARY KEY,

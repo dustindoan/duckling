@@ -47,6 +47,22 @@ let filesPulledOnce = false;
 export const getCachedCollection = (id: number): Collection | undefined =>
     collectionCache.get(id);
 
+/**
+ * Cache lookup that self-warms on a miss. The cache is per-process, so a
+ * one-shot `duckling call upload.put_file` (or a freshly-rotated worker
+ * whose supervisor skipped collections.list) would otherwise be unable to
+ * target any collection it didn't create itself.
+ */
+export const ensureCollectionCached = async (
+    id: number,
+): Promise<Collection | undefined> => {
+    const hit = collectionCache.get(id);
+    if (hit) return hit;
+    const collections = await pullCollections();
+    for (const c of collections) collectionCache.set(c.id, c);
+    return collectionCache.get(id);
+};
+
 // Fallback display name for ente's special collections (favorites,
 // uncategorized) whose `name` arrives empty — ente's web/desktop client
 // localizes these client-side. We don't localize; a fixed English label is

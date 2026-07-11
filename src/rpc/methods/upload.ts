@@ -27,7 +27,7 @@ import type { UploadableUploadItem } from "ente-gallery/services/upload";
 import type { EnteFile } from "ente-media/file";
 import { metadataHash } from "ente-media/file-metadata";
 import { currentAdapter } from "../../platform/install.ts";
-import { getCachedCollection } from "./collections.ts";
+import { ensureCollectionCached } from "./collections.ts";
 import { noteUploadedFile, recentUploads } from "../recent-uploads.ts";
 import type { Dispatcher } from "../dispatch.ts";
 
@@ -210,7 +210,7 @@ export const registerUploadMethods = (d: Dispatcher): void => {
         if (typeof collectionID !== "number" || !Number.isFinite(collectionID)) {
             throw new Error("upload.put_file: params.collectionID required");
         }
-        const collection = getCachedCollection(collectionID);
+        const collection = await ensureCollectionCached(collectionID);
         if (!collection) {
             throw new Error(
                 `upload.put_file: collection ${collectionID} not in cache — ` +
@@ -381,7 +381,7 @@ export const registerUploadMethods = (d: Dispatcher): void => {
         if (typeof collectionID !== "number" || !Number.isFinite(collectionID)) {
             throw new Error("upload.put_live_photo: params.collectionID required");
         }
-        const collection = getCachedCollection(collectionID);
+        const collection = await ensureCollectionCached(collectionID);
         if (!collection) {
             throw new Error(
                 `upload.put_live_photo: collection ${collectionID} not in cache — ` +
