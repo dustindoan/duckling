@@ -15,8 +15,8 @@ jobs:
   release:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: ente-io/ente
           ref: cb7b94ce3dc822d99d98f086dc9958a08b3e7555

@@ -13,13 +13,13 @@ jobs:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # duckling consumes ente's web packages in place (no vendoring); CI
       # clones the sibling the same way a developer does — PINNED to the
       # last verified upstream SHA so CI is reproducible. Upstream drift
       # is watched separately (drift.yml weekly canary + scripts/smoke.ts
       # locally); bump this ref when pulling upstream.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ente-io/ente
           ref: cb7b94ce3dc822d99d98f086dc9958a08b3e7555
@@ -44,8 +44,8 @@ jobs:
   cross-compile:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: ente-io/ente
           ref: cb7b94ce3dc822d99d98f086dc9958a08b3e7555
