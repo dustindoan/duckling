@@ -1,6 +1,6 @@
 {
   "name": "duckling",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Headless ente client — ente desktop's own upload + auth code, compiled to a single binary. CLI and stdio JSON-RPC.",
   "private": true,
   "type": "module",
@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "bun --preserve-symlinks run src/index.ts",
     "build": "bun build --compile --preserve-symlinks --target=bun-darwin-arm64 src/index.ts --outfile dist/duckling",
+    "build:all": "for t in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do bun build --compile --preserve-symlinks --target=bun-$t src/index.ts --outfile dist/duckling-$t || exit 1; done",
+    "build:host": "bun build --compile --preserve-symlinks src/index.ts --outfile dist/duckling",
     "typecheck": "tsc --noEmit",
     "smoke": "bun --preserve-symlinks run scripts/smoke.ts",
     "link-ente": "bash scripts/link-ente.sh",

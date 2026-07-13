@@ -44,7 +44,7 @@ import {
     type JsonRpcRequest,
 } from "./rpc/types.ts";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 const buildDispatcher = (): Dispatcher => {
     const d = new Dispatcher();
@@ -88,7 +88,6 @@ const runStdioServer = async (dispatcher: Dispatcher): Promise<void> => {
     const decoder = new TextDecoder();
     let buffer = "";
 
-    // @ts-expect-error: Bun exposes ReadableStream on process.stdin
     for await (const chunk of process.stdin) {
         buffer += decoder.decode(chunk as Uint8Array, { stream: true });
         let newlineIdx: number;

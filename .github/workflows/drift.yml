@@ -1,0 +1,39 @@
+# Upstream drift canary. ci.yml pins ente to a verified SHA; this job
+# runs the same gates against ente's CURRENT main so drift is detected
+# on a schedule instead of on the next manual upstream pull. A red run
+# here does not block anything — it means: pull upstream locally, fix,
+# run the live smoke (scripts/smoke.ts), then bump the pin in ci.yml
+# and release.yml.
+
+name: upstream-drift
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ente-io/ente
+          ref: main
+          path: ente-upstream
+          sparse-checkout: web/packages
+      - uses: oven-sh/setup-bun@v2
+      - name: record upstream SHA under test
+        run: git -C ente-upstream rev-parse HEAD
+      - name: install + link ente packages
+        run: ENTE_ROOT="$GITHUB_WORKSPACE/ente-upstream/web/packages" bun install
+      - name: src-level typecheck gate
+        run: |
+          bun run typecheck 2>&1 | grep "error TS" | grep -v "node_modules" || true
+          errors=$(bun run typecheck 2>&1 | grep "error TS" | grep -cv "node_modules" || true)
+          echo "src-level errors: $errors"
+          test "$errors" -eq 0
+      - run: bun run build:host
+      - name: offline test tier
+        run: bun test test/

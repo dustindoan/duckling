@@ -16,12 +16,14 @@
 // place as `ente-helper`), so #2 resolves. For CLI dev / smoke tests
 // the system ffmpeg (homebrew typically) handles #3.
 //
-// **HDR detection is not yet implemented.** ente passes some commands as
-// `{ default: string[]; hdr: string[] }` so the host can pick the right
-// one. Picking correctly requires running ffmpeg once to read the file's
-// colour transfer (BT.2020-PQ etc.). We always use `.default` for now —
-// SDR rendering of an HDR video is washed-out but uploads fine. Mark
-// the TODO inline.
+// **HDR detection** mirrors ente's Electron host (`isHDRVideo` in
+// ente/desktop/src/main/services/ffmpeg-worker.ts): run the same
+// pseudo-ffprobe pass used for duration, then look for the HDR colour
+// transfers ("smpte2084", "arib-std-b67") in the video stream line.
+// Probe failures fall back to `.default` — upstream documents the false
+// negative as the lesser evil, since tonemapping a non-HDR file fails
+// with "no path between colorspaces" while SDR rendering of an HDR
+// video is merely washed out.
 //
 // Pattern borrowed from BunThumbnailer: scratch dir per call, cleanup
 // on success or failure, no shared state.
@@ -59,10 +61,11 @@ export class BunFFmpegRunner implements FFmpegRunner {
             );
             const outputPath = join(scratch, `output.${outputFileExtension}`);
 
-            // TODO: detect HDR before picking the command variant. Requires
-            // a preliminary ffmpeg call to read the input's colour transfer
-            // characteristics. Until then, default is the safer fallback.
-            const resolved = Array.isArray(command) ? command : command.default;
+            const resolved = Array.isArray(command)
+                ? command
+                : (await this.isHDRVideo(inputPath))
+                  ? command.hdr
+                  : command.default;
             const cmd = this.substitutePlaceholders(
                 resolved,
                 inputPath,
@@ -88,39 +91,62 @@ export class BunFFmpegRunner implements FFmpegRunner {
                 pathOrZipItem,
                 scratch,
             );
-            // ffmpeg -hide_banner -i INPUT -an -frames:v 0 -f null -
-            //
-            // Same shape as ente's Electron host (`pseudoFFProbeVideo` in
-            // ente/desktop/src/main/services/ffmpeg-worker.ts). We rely on
-            // ffmpeg writing the "Duration:" line to stderr because we
-            // don't ship ffprobe; ente makes the same choice for the same
-            // reason. See [Note: Parsing CLI output might break on ffmpeg
-            // updates] in ente's source for the long-running caveat.
-            const cmd = [
-                await this.binaryPath(),
-                "-hide_banner",
-                "-i", inputPath,
-                "-an",
-                "-frames:v", "0",
-                "-f", "null",
-                "-",
-            ];
-            const proc = Bun.spawn({
-                cmd,
-                stdout: "ignore",
-                stderr: "pipe",
-            });
-            // ffmpeg writes "info" to stderr; ignoring exit code matches
-            // ente's behaviour. The "-frames:v 0 -f null -" command
-            // exits successfully on well-formed inputs and with non-zero
-            // on truly broken files; either way we parse what we have.
-            const stderr = await new Response(proc.stderr).text();
-            await proc.exited;
-            return parseDurationFromStderr(stderr);
+            return parseDurationFromStderr(
+                await this.pseudoFFProbe(inputPath),
+            );
         });
     }
 
     // ─── helpers ─────────────────────────────────────────────────────
+
+    /**
+     * ffmpeg -hide_banner -i INPUT -an -frames:v 0 -f null -
+     *
+     * Same shape as ente's Electron host (`pseudoFFProbeVideo` in
+     * ente/desktop/src/main/services/ffmpeg-worker.ts). We rely on
+     * ffmpeg writing stream info to stderr because we don't ship
+     * ffprobe; ente makes the same choice for the same reason. See
+     * [Note: Parsing CLI output might break on ffmpeg updates] in
+     * ente's source for the long-running caveat.
+     *
+     * ffmpeg writes "info" to stderr; ignoring exit code matches
+     * ente's behaviour. The "-frames:v 0 -f null -" command exits
+     * successfully on well-formed inputs and with non-zero on truly
+     * broken files; either way callers parse what we have.
+     */
+    private async pseudoFFProbe(inputPath: string): Promise<string> {
+        const cmd = [
+            await this.binaryPath(),
+            "-hide_banner",
+            "-i", inputPath,
+            "-an",
+            "-frames:v", "0",
+            "-f", "null",
+            "-",
+        ];
+        const proc = Bun.spawn({
+            cmd,
+            stdout: "ignore",
+            stderr: "pipe",
+        });
+        const stderr = await new Response(proc.stderr).text();
+        await proc.exited;
+        return stderr;
+    }
+
+    /**
+     * Heuristically detect whether the video is HDR, to pick between the
+     * `default` and `hdr` variants of an ente command template. Mirrors
+     * upstream's `isHDRVideo`; probe failures return false (see the
+     * header comment for why false negatives are the safe direction).
+     */
+    private async isHDRVideo(inputPath: string): Promise<boolean> {
+        try {
+            return stderrIndicatesHDR(await this.pseudoFFProbe(inputPath));
+        } catch {
+            return false;
+        }
+    }
 
     /**
      * Resolve and cache the ffmpeg binary path. Throws a clear error if
@@ -148,17 +174,12 @@ export class BunFFmpegRunner implements FFmpegRunner {
             return sibling;
         }
 
-        // System PATH. `which` is in /usr/bin on every macOS.
-        const which = Bun.spawn({
-            cmd: ["/usr/bin/which", "ffmpeg"],
-            stdout: "pipe",
-            stderr: "ignore",
-        });
-        const out = (await new Response(which.stdout).text()).trim();
-        await which.exited;
-        if (out && existsSync(out)) {
-            this.ffmpegPath = out;
-            return out;
+        // System PATH. Bun.which is cross-platform (the previous
+        // /usr/bin/which spawn was macOS-shaped).
+        const onPath = Bun.which("ffmpeg");
+        if (onPath) {
+            this.ffmpegPath = onPath;
+            return onPath;
         }
 
         throw new Error(
@@ -270,6 +291,29 @@ export class BunFFmpegRunner implements FFmpegRunner {
         }
     }
 }
+
+// ─── stderr parsing ──────────────────────────────────────────────────
+
+// Mirrors ente's `videoStreamLineRegex` in ffmpeg-worker.ts. Matches e.g.
+//
+//     Stream #0:0: Video: h264 (High 10) ([27][0][0][0] / 0x001B), yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67), 1920x1080, 30 fps, ...
+//
+// with everything after "Video:" as the first capture group.
+const VIDEO_STREAM_LINE_REGEX = /Stream #.+: Video:(.+)\r?\n/;
+
+/**
+ * True if ffmpeg's stderr describes an HDR video stream. Same check as
+ * ente's `isHDRVideo`: HDR colour transfers (PQ / HLG) named in the
+ * video stream line. No false positives expected; false negatives
+ * possible — and preferable, per the header comment.
+ *
+ * Exported for unit testing.
+ */
+export const stderrIndicatesHDR = (stderr: string): boolean => {
+    const vs = VIDEO_STREAM_LINE_REGEX.exec(stderr)?.at(1);
+    if (!vs) return false;
+    return vs.includes("smpte2084") || vs.includes("arib-std-b67");
+};
 
 // ─── duration parsing ────────────────────────────────────────────────
 

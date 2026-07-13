@@ -68,11 +68,10 @@ export interface Thumbnailer {
  * temporary file before running ffmpeg.
  *
  * The HDR-aware command form (`{ default, hdr }`) lets ente specify a
- * different command for HDR vs SDR video. The host is responsible for
- * detecting which to use; today we always pick `.default` because
- * detection requires a separate ffmpeg call — see BunFFmpegRunner for
- * the TODO. SDR-as-fallback is the right failure mode (HDR mishandled
- * looks washed out but doesn't fail the upload).
+ * different command for HDR vs SDR video. The host detects which to use
+ * via a preliminary ffmpeg probe of the input's colour transfer — see
+ * BunFFmpegRunner. Detection failures fall back to `.default` (HDR
+ * mishandled looks washed out but doesn't fail the upload).
  */
 export type ZipItem = [zipPath: string, entryName: string];
 export type FFmpegCommand = string[] | { default: string[]; hdr: string[] };

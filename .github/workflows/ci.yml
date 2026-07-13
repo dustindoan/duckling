@@ -7,14 +7,18 @@ on:
 
 jobs:
   test:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       # duckling consumes ente's web packages in place (no vendoring); CI
       # clones the sibling the same way a developer does — PINNED to the
-      # last verified upstream SHA so CI is reproducible. Upstream drift is
-      # a separate concern (scripts/smoke.ts is the canary); bump this ref
-      # when pulling upstream locally.
+      # last verified upstream SHA so CI is reproducible. Upstream drift
+      # is watched separately (drift.yml weekly canary + scripts/smoke.ts
+      # locally); bump this ref when pulling upstream.
       - uses: actions/checkout@v4
         with:
           repository: ente-io/ente
@@ -29,7 +33,25 @@ jobs:
           bun run typecheck 2>&1 | grep "error TS" | grep -v "node_modules" || true
           errors=$(bun run typecheck 2>&1 | grep "error TS" | grep -cv "node_modules" || true)
           echo "src-level errors: $errors"
-          test "$errors" -le 1  # the one known unused @ts-expect-error
-      - run: bun run build
+          test "$errors" -eq 0
+      # Host-native build: the offline tier spawns dist/duckling, so each
+      # matrix leg tests the binary it would actually ship.
+      - run: bun run build:host
       - name: offline test tier
-        run: bun test test/cli.test.ts
+        run: bun test test/
+
+  # Every release target must keep compiling, not just the host's.
+  cross-compile:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ente-io/ente
+          ref: cb7b94ce3dc822d99d98f086dc9958a08b3e7555
+          path: ente-upstream
+          sparse-checkout: web/packages
+      - uses: oven-sh/setup-bun@v2
+      - name: install + link ente packages
+        run: ENTE_ROOT="$GITHUB_WORKSPACE/ente-upstream/web/packages" bun install
+      - run: bun run build:all

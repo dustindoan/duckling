@@ -1,0 +1,43 @@
+# Tag push (v*) → build all four targets against the pinned upstream,
+# gate on the offline tier, and publish zips to a GitHub release.
+# Keep the pin in sync with ci.yml.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ente-io/ente
+          ref: cb7b94ce3dc822d99d98f086dc9958a08b3e7555
+          path: ente-upstream
+          sparse-checkout: web/packages
+      - uses: oven-sh/setup-bun@v2
+      - name: install + link ente packages
+        run: ENTE_ROOT="$GITHUB_WORKSPACE/ente-upstream/web/packages" bun install
+      - name: gate on host build + offline tier
+        run: bun run build:host && bun test test/
+      - run: bun run build:all
+      - name: package
+        run: |
+          cd dist
+          for t in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            zip "duckling-$GITHUB_REF_NAME-$t.zip" "duckling-$t"
+          done
+      - name: create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/duckling-"$GITHUB_REF_NAME"-*.zip \
+            --title "$GITHUB_REF_NAME" --generate-notes

@@ -28,7 +28,10 @@ JS-level leak by design.
 
 ## Install
 
-Grab a release binary (macOS arm64 for now), or build from source (below).
+Grab a release binary — macOS (arm64, x64) and Linux (x64, arm64) — or
+build from source (below). macOS arm64 and Linux x64 are what CI runs the
+test suite on; the other two are cross-compiled and should be treated as
+best-effort.
 
 ffmpeg (for video thumbnails/metadata): install system-wide, place a binary
 next to the duckling executable, or set `DUCKLING_FFMPEG_PATH`.
@@ -87,7 +90,9 @@ bun run build                                            # → dist/duckling
 (see `scripts/link-ente.sh` for the how and the two deliberate overrides).
 After pulling upstream ente, re-run `bun run link-ente`, then
 `bun run smoke` (needs `ENTE_EMAIL`/`ENTE_PASSWORD`) to catch drift before
-it bites.
+it bites. CI pins upstream to a verified SHA; a weekly workflow
+(`drift.yml`) runs the same gates against upstream `main` so drift shows
+up as a red scheduled run rather than a surprise at the next pull.
 
 ## Testing
 
