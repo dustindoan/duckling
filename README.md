@@ -59,8 +59,42 @@ duckling call upload.put_file '{"path":"/photos/IMG_0042.HEIC","collectionID":12
 Session state persists in `~/.duckling` (override: `DUCKLING_STATE_DIR`),
 so `call` invocations after login are authenticated.
 
-Friendlier verbs (`duckling login` with interactive 2FA prompts,
-`duckling upload <folder>`) are next; they layer over the same methods.
+Friendlier verbs layer over the same methods: `duckling login` (interactive,
+prompts for password), `duckling whoami`, `duckling ls`, `duckling upload
+<path>... --album <name>`, and `duckling logout`.
+
+### drain — watch a staging directory
+
+```sh
+duckling drain --album Photos --staging ~/EnteExportStaging
+```
+
+Watches a directory (e.g. an FSKit-mounted export drive, or any folder fed
+by an external exporter), pairs Live Photo halves by stem, uploads each
+file or pair, and **deletes the staged file the moment ente confirms the
+upload** — so the directory's disk usage stays bounded regardless of how
+much gets written to it. Add `--once` to drain whatever's there and exit
+instead of watching.
+
+`drain` is an orchestrator, not the process doing the uploading: it spawns
+duckling itself as a worker child and talks to it over stdio JSON-RPC
+(same as the JSON-RPC server mode, just piped rather than driven from your
+shell), because ente's upload/crypto code has known JS-level memory growth
+over long sessions and a wedged upload has no clean in-process
+cancellation (see `src/drain.ts` and `src/drain-client.ts`). The
+orchestrator kills and respawns that child — replaying `auth.restore` +
+`collections.list` — every `--rotate-every` uploads (default 500) or when
+a call times out, and its own memory never grows regardless of how long
+it watches. A process manager wrapping `drain` only needs the ordinary
+contract: restart it if it dies.
+
+Other flags: `--quiesce <secs>` (default 5 — how long a file's mtime must
+be stable before it's eligible), `--zero-byte-quiesce <secs>` (default
+600), `--pair-grace <secs>` (default 15 — how long a lone Live Photo half
+waits for its mate), `--sentinel-ttl <secs>` (default 900), `--poll
+<secs>` (default 5), `--status-file <path>` (default
+`<state dir>/drain-status.json` — machine-readable progress for a
+supervisor to poll).
 
 ### As a JSON-RPC server
 

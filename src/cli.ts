@@ -1,7 +1,9 @@
 // cli.ts — human-facing verbs over the RPC dispatcher.
 //
 // One engine, two transports (see index.ts): every verb here calls the same
-// dispatcher the stdio JSON-RPC server exposes. What the verbs add is
+// dispatcher the stdio JSON-RPC server exposes — except `drain`, which is
+// an orchestrator that does all its RPC through a self-spawned duckling
+// child instead (see its section header below). What the verbs add is
 // session persistence: ente's localStorage/sessionStorage polyfills are
 // in-memory and die with the process, so `login` writes the SessionBundle
 // to <state dir>/session.json (mode 0600 — it contains key material) and
@@ -14,14 +16,23 @@
 
 import {
     existsSync,
+    mkdirSync,
     readdirSync,
     readFileSync,
     rmSync,
     statSync,
     writeFileSync,
 } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { DucklingClient } from "./drain-client.ts";
+import {
+    createDrainer,
+    newTotals,
+    runWatch,
+    type DrainTotals,
+} from "./drain.ts";
 import { stateDir } from "./platform/sqlite-kv.ts";
 import type { Dispatcher } from "./rpc/dispatch.ts";
 
@@ -235,6 +246,32 @@ interface CollectionSummary {
     type: string;
 }
 
+/** Resolve an album by exact name, creating it if absent. `folder` type
+ * collections behave as album aliases (mobile-created), so accept both.
+ * Shared by cliUpload and cliDrain — both need the same "find or create
+ * exactly this album" semantics. */
+const resolveOrCreateAlbum = async (
+    d: Dispatcher,
+    name: string,
+): Promise<number> => {
+    const { collections } = await rpc<{ collections: CollectionSummary[] }>(
+        d,
+        "collections.list",
+    );
+    const match = collections.find(
+        (c) => c.name === name && (c.type === "album" || c.type === "folder"),
+    );
+    if (match) {
+        err(`album "${name}" (id ${match.id})`);
+        return match.id;
+    }
+    const created = await rpc<{ id: number }>(d, "collections.create", {
+        name,
+    });
+    err(`album "${name}" created (id ${created.id})`);
+    return created.id;
+};
+
 export const cliLs = async (d: Dispatcher): Promise<void> => {
     await ensureSession(d);
     const { collections } = await rpc<{ collections: CollectionSummary[] }>(
@@ -309,26 +346,7 @@ export const cliUpload = async (
 
     await ensureSession(d);
 
-    // Resolve the album by exact name; create it if absent. `folder` type
-    // collections behave as album aliases (mobile-created), so accept both.
-    const { collections } = await rpc<{ collections: CollectionSummary[] }>(
-        d,
-        "collections.list",
-    );
-    const match = collections.find(
-        (c) => c.name === album && (c.type === "album" || c.type === "folder"),
-    );
-    let collectionID: number;
-    if (match) {
-        collectionID = match.id;
-        err(`album "${album}" (id ${collectionID})`);
-    } else {
-        const created = await rpc<{ id: number }>(d, "collections.create", {
-            name: album,
-        });
-        collectionID = created.id;
-        err(`album "${album}" created (id ${collectionID})`);
-    }
+    const collectionID = await resolveOrCreateAlbum(d, album);
 
     let uploaded = 0;
     let present = 0;
@@ -365,6 +383,191 @@ export const cliUpload = async (
     if (failed > 0) parts.push(`${failed} failed`);
     out(`done: ${parts.join(", ")}`);
     process.exit(failed > 0 ? 1 : 0);
+};
+
+// ---------------------------------------------------------------------------
+// drain — continuous watch over a staging directory (e.g. an FSKit-mounted
+// export drive). Folded in from waddle. Unlike every other verb in this
+// file, cliDrain never touches the in-process Dispatcher: it does all
+// upload work through a DucklingClient that spawns duckling itself as a
+// child (see drain-client.ts and drain.ts's file header for why). That
+// keeps this orchestrator's own memory flat for the life of the watch —
+// only the child's memory is subject to ente's upload-pipeline growth,
+// and only the child gets rotated.
+// ---------------------------------------------------------------------------
+
+/** Per-upload ceiling before a call is declared wedged. Sized for a
+ * multi-GB video over a slow uplink, with margin. Env override exists for
+ * integration tests (and emergencies), not for tuning. */
+const UPLOAD_TIMEOUT_MS = Number(
+    process.env.DUCKLING_UPLOAD_TIMEOUT_MS ?? 45 * 60 * 1000,
+);
+
+/** Give up on a staged file after this many failed upload attempts; it
+ * stays in staging and is reported at the end. Attempt counts live in
+ * this orchestrator and survive child rotations. */
+const MAX_ATTEMPTS_PER_FILE = 2;
+
+interface DrainFlags {
+    album: string;
+    staging: string;
+    quiesceSecs: number;
+    zeroByteQuiesceSecs: number;
+    pairGraceSecs: number;
+    pollSecs: number;
+    sentinelTtlSecs: number;
+    rotateEvery: number;
+    once: boolean;
+    statusFile: string;
+}
+
+const parseDrainFlags = (argv: string[]): DrainFlags => {
+    const opts: DrainFlags = {
+        album: "",
+        staging: join(homedir(), "EnteExportStaging"),
+        quiesceSecs: Number(process.env.DUCKLING_QUIESCE_SECS ?? 5),
+        zeroByteQuiesceSecs: Number(
+            process.env.DUCKLING_ZERO_BYTE_QUIESCE_SECS ?? 600,
+        ),
+        pairGraceSecs: Number(process.env.DUCKLING_PAIR_GRACE_SECS ?? 15),
+        pollSecs: Number(process.env.DUCKLING_POLL_SECS ?? 5),
+        sentinelTtlSecs: Number(process.env.DUCKLING_SENTINEL_TTL_SECS ?? 900),
+        rotateEvery: 500,
+        once: false,
+        statusFile: join(stateDir(), "drain-status.json"),
+    };
+    const takeValue = (flag: string, v: string | undefined): string => {
+        if (v === undefined) {
+            err(`drain: ${flag} needs a value`);
+            process.exit(2);
+        }
+        return v;
+    };
+    const takeNumber = (flag: string, v: string | undefined): number => {
+        const n = Number(takeValue(flag, v));
+        if (!Number.isFinite(n) || n <= 0) {
+            err(`drain: ${flag} must be a positive number`);
+            process.exit(2);
+        }
+        return n;
+    };
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i]!;
+        switch (a) {
+            case "--album":
+                opts.album = takeValue(a, argv[++i]);
+                break;
+            case "--staging":
+                opts.staging = takeValue(a, argv[++i]);
+                break;
+            case "--quiesce":
+                opts.quiesceSecs = takeNumber(a, argv[++i]);
+                break;
+            case "--zero-byte-quiesce":
+                opts.zeroByteQuiesceSecs = takeNumber(a, argv[++i]);
+                break;
+            case "--pair-grace":
+                opts.pairGraceSecs = takeNumber(a, argv[++i]);
+                break;
+            case "--sentinel-ttl":
+                opts.sentinelTtlSecs = takeNumber(a, argv[++i]);
+                break;
+            case "--poll":
+                opts.pollSecs = takeNumber(a, argv[++i]);
+                break;
+            case "--rotate-every":
+                opts.rotateEvery = takeNumber(a, argv[++i]);
+                break;
+            case "--status-file":
+                opts.statusFile = takeValue(a, argv[++i]);
+                break;
+            case "--once":
+                opts.once = true;
+                break;
+            default:
+                err(`drain: unknown option ${a}`);
+                process.exit(2);
+        }
+    }
+    if (!opts.album) {
+        err("usage: duckling drain --album <name> [options] (see --help)");
+        process.exit(2);
+    }
+    return opts;
+};
+
+const countStagedFiles = (staging: string): number => {
+    if (!existsSync(staging)) return 0;
+    return readdirSync(staging, { withFileTypes: true }).filter(
+        (e) => e.isFile() && !e.name.startsWith("."),
+    ).length;
+};
+
+/** cliDrain never receives (or needs) the top-level Dispatcher — see the
+ * section header. */
+export const cliDrain = async (argv: string[]): Promise<void> => {
+    const opts = parseDrainFlags(argv);
+
+    if (!existsSync(sessionPath())) {
+        err(`not logged in — run: duckling login`);
+        process.exit(1);
+    }
+
+    mkdirSync(opts.staging, { recursive: true });
+    mkdirSync(dirname(opts.statusFile), { recursive: true });
+    err(`draining ${opts.staging} ${opts.once ? "(once)" : "(watch)"}`);
+
+    const client = new DucklingClient();
+    try {
+        await client.start();
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        err(`drain: could not start duckling worker: ${msg}`);
+        process.exit(1);
+    }
+    const collectionID = await client.ensureAlbum(opts.album);
+    err(`album "${opts.album}" → collection ${collectionID}`);
+
+    const totals: DrainTotals = newTotals();
+    const drainer = createDrainer({
+        client,
+        collectionID,
+        totals,
+        uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
+        maxAttemptsPerFile: MAX_ATTEMPTS_PER_FILE,
+        rotateEvery: opts.rotateEvery,
+    });
+
+    await runWatch(
+        {
+            staging: opts.staging,
+            quiesceSecs: opts.quiesceSecs,
+            zeroByteQuiesceSecs: opts.zeroByteQuiesceSecs,
+            pairGraceSecs: opts.pairGraceSecs,
+            pollSecs: opts.pollSecs,
+            sentinelTtlSecs: opts.sentinelTtlSecs,
+            once: opts.once,
+            statusFile: opts.statusFile,
+        },
+        { drainer, totals, album: opts.album },
+    );
+
+    await client.stop();
+
+    const parts = [
+        `${totals.uploaded} uploaded (${totals.livePairs} live photo pairs)`,
+        `${totals.present} already present`,
+        `${totals.failed} failed`,
+        `${totals.skippedUnsupported + totals.skippedAae} skipped (${totals.skippedAae} .aae)`,
+    ];
+    out(`done: ${parts.join(", ")}`);
+
+    const remaining = countStagedFiles(opts.staging);
+    if (remaining > 0) {
+        out(`${remaining} file(s) left in staging: ${opts.staging}`);
+        process.exit(1);
+    }
+    process.exit(0);
 };
 
 const formatBytes = (n?: number): string => {

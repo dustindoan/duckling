@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+    cliDrain,
     cliLogin,
     cliLogout,
     cliLs,
@@ -225,6 +226,10 @@ const main = async (): Promise<void> => {
         console.log("  duckling ls                        list albums");
         console.log("  duckling upload <path>... --album <name>");
         console.log("                                     upload files/folders into an album");
+        console.log("  duckling drain --album <name> [options]");
+        console.log("                                     watch a staging dir, upload + delete on confirm");
+        console.log("                                     (spawns duckling as a worker child, rotating it");
+        console.log("                                     every --rotate-every uploads or on a wedge)");
         console.log("  duckling logout                    forget the stored session");
         console.log("  duckling call <method> ['<json>']  invoke one RPC method, print the result");
         console.log("  duckling --list-methods            print known RPC methods");
@@ -266,6 +271,9 @@ const main = async (): Promise<void> => {
                     return;
                 case "upload":
                     await cliUpload(dispatcher, args.slice(1));
+                    return;
+                case "drain":
+                    await cliDrain(args.slice(1));
                     return;
                 default:
                     console.error(
