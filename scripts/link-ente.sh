@@ -101,6 +101,29 @@ if [[ -f "$ffmpeg_empty" ]]; then
     echo "  overrode @ffmpeg/ffmpeg empty.mjs → $ffmpeg_stub"
 fi
 
+# --- 2c. localforage entry override (dev-mode parity with the bundle).
+#
+# The `localforage` tsconfig path alias (→ shims/localforage.ts) is
+# applied by `bun build` across the whole bundle, but `bun run` does NOT
+# apply the project's tsconfig paths to imports resolving from inside
+# node_modules — so ente-gallery/services/files-db.ts's
+# `import localForage from "localforage"` loads the REAL package in dev
+# mode, whose browser-driver detection fails under Bun with "No
+# available storage method found" (the exact failure the shim exists to
+# avoid; see shims/localforage.ts). Point the package's entry at the
+# shim so both run modes resolve to the same implementation. The
+# compiled build never reads this file (the alias wins there).
+localforage_main="$HERE/node_modules/localforage/dist/localforage.js"
+if [[ -f "$localforage_main" ]]; then
+    cat > "$localforage_main" <<EOF
+// Overwritten by scripts/link-ente.sh (step 2c) — dev-mode (\`bun run\`)
+// resolves the real package here, where the browser driver detection
+// fails under Bun; route it to the same shim the bundle aliases to.
+module.exports = require("$HERE/src/platform/shims/localforage.ts").default;
+EOF
+    echo "  overrode localforage entry → src/platform/shims/localforage.ts"
+fi
+
 # --- 3. Reverse-link for bundler walk-up.
 ente_web="$(dirname "$ENTE_ROOT")"
 ente_web_nm="$ente_web/node_modules"
