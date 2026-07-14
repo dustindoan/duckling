@@ -11,7 +11,7 @@
 //   - The target collection must have been seen during this process
 //     (via collections.create). No silent fetch of "any collection".
 
-import { readFileSync, statSync, unlinkSync } from "node:fs";
+import { readFileSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { basename } from "node:path";
 import { createComlinkCryptoWorker } from "ente-base/crypto";
 import type { CryptoWorker } from "ente-base/crypto/worker";
@@ -197,6 +197,33 @@ const cleanupStagedInput = (path: string): void => {
     }
 };
 
+/// The capture date to stamp onto ente, in epoch milliseconds.
+///
+/// Photos.app's native export writes the true capture instant to the file's
+/// creation time (birthtime); mtime gets the export/import moment. ente's
+/// creationTime resolution (upload-service.ts) reads EXIF first, but for
+/// formats that carry no EXIF date (PNG, screenshots, some videos, edited
+/// re-encodes) it falls back to this File's lastModified — and if that's the
+/// mtime, the file lands stamped with the migration date. birthtime is the
+/// only place the capture date survives for those files, so prefer the EARLIER
+/// of birthtime and mtime. (This requires the FSKit staging layer to preserve
+/// the birthtime setattr — see puddle EnteFSKVolume.setAttributes; ente's own
+/// watch-folder ingest only ever reads mtime, so this is a deliberate
+/// improvement over it.)
+///
+/// Guarded on birthtime > 0: a filesystem that doesn't report a birth time
+/// yields 0 from statSync, and an unguarded Math.min would drag every date
+/// back to the Unix epoch.
+///
+/// Floored: Bun/macOS reports sub-millisecond fractional precision; ente later
+/// multiplies by 1000 (→ µs) and ensureInteger throws on the .5. At most one
+/// millisecond is lost; the user-visible timestamp is unchanged.
+const captureDateMs = (stat: Stats): number => {
+    const mtime = Math.floor(stat.mtimeMs);
+    const birth = Math.floor(stat.birthtimeMs);
+    return birth > 0 ? Math.min(mtime, birth) : mtime;
+};
+
 export const registerUploadMethods = (d: Dispatcher): void => {
     d.register("upload.put_file", async (params) => {
         const log = currentAdapter().log;
@@ -243,12 +270,8 @@ export const registerUploadMethods = (d: Dispatcher): void => {
                 ? fileNameOverride
                 : basename(path);
         const bytes = readFileSync(path);
-        // Floor mtimeMs: Bun/macOS gives sub-millisecond fractional
-        // precision; ente later multiplies by 1000 (→ microseconds) and
-        // ensureInteger throws on the .5. The user-observable timestamp
-        // is unchanged — we lose at most one millisecond of precision.
         const file = new File([bytes], fileName, {
-            lastModified: Math.floor(stat.mtimeMs),
+            lastModified: captureDateMs(stat),
         });
         log.info(
             `upload.put_file: ${path} (${stat.size} bytes) → collection ${collectionID}`,
@@ -419,10 +442,10 @@ export const registerUploadMethods = (d: Dispatcher): void => {
         const stillBytes = readFileSync(stillPath);
         const motionBytes = readFileSync(motionPath);
         const stillFile = new File([stillBytes], stillName, {
-            lastModified: Math.floor(stillStat.mtimeMs),
+            lastModified: captureDateMs(stillStat),
         });
         const motionFile = new File([motionBytes], motionName, {
-            lastModified: Math.floor(motionStat.mtimeMs),
+            lastModified: captureDateMs(motionStat),
         });
         log.info(
             `upload.put_live_photo: still=${stillName} (${stillStat.size}b) + motion=${motionName} (${motionStat.size}b) → collection ${collectionID}`,
