@@ -93,15 +93,25 @@ const readLine = async (label: string): Promise<string> => {
 };
 
 /**
- * Read a line with echo off (password entry). Raw-mode byte loop on a real
- * terminal; falls back to a plain (visible-input-irrelevant) line read when
- * stdin is piped. Handles backspace, Ctrl-C, and EOF. ASCII-safe; multibyte
- * input works as long as the user doesn't backspace mid-character
- * (acceptable for passwords).
+ * Read a single line from a real terminal in raw mode, resolving on Enter.
+ * Handles backspace, Ctrl-C, and EOF; ASCII-safe (multibyte works as long as
+ * the user doesn't backspace mid-character). Falls back to a plain line read
+ * when stdin is piped.
+ *
+ * Why not readLine for prompts that follow a secret: readLine's shared
+ * readline interface (nextStdinLine) stays attached to stdin across a
+ * readSecret call and, in raw mode, queues the just-typed line as a phantom.
+ * A readLine issued *after* readSecret then returns that stale line
+ * immediately instead of waiting — so a "2FA code" prompt after the password
+ * would submit the password (or empty) without ever pausing for input.
+ * Reading raw bytes here bypasses that queue entirely.
+ *
+ * `echo` shows typed characters (for non-secret input like a TOTP code) or
+ * hides them (for passwords).
  */
-const readSecret = (label: string): Promise<string> => {
+const readRaw = (label: string, echo: boolean): Promise<string> => {
     if (!process.stdin.isTTY) return readLine(label);
-    return new Promise((resolveSecret) => {
+    return new Promise((resolve) => {
         process.stderr.write(label);
         const stdin = process.stdin;
         const hadRaw = stdin.isRaw ?? false;
@@ -111,7 +121,7 @@ const readSecret = (label: string): Promise<string> => {
         const finish = (): void => {
             cleanup();
             process.stderr.write("\n");
-            resolveSecret(new TextDecoder().decode(new Uint8Array(bytes)));
+            resolve(new TextDecoder().decode(new Uint8Array(bytes)));
         };
         const cleanup = (): void => {
             stdin.off("data", onData);
@@ -130,9 +140,12 @@ const readSecret = (label: string): Promise<string> => {
                     finish();
                     return;
                 } else if (byte === 127 || byte === 8) {
-                    bytes.pop();
+                    // Backspace: drop a byte, and visually erase if echoing.
+                    if (bytes.pop() !== undefined && echo)
+                        process.stderr.write("\b \b");
                 } else {
                     bytes.push(byte);
+                    if (echo) process.stderr.write(String.fromCharCode(byte));
                 }
             }
         };
@@ -140,6 +153,9 @@ const readSecret = (label: string): Promise<string> => {
         stdin.once("end", finish);
     });
 };
+
+/** Read a secret (password) with echo off. */
+const readSecret = (label: string): Promise<string> => readRaw(label, false);
 
 // ---------------------------------------------------------------------------
 // Session persistence
@@ -215,7 +231,9 @@ export const cliLogin = async (
             );
             process.exit(1);
         }
-        const code = (await readLine("2FA code: ")).replace(/\s+/g, "");
+        // readRaw, not readLine: this prompt follows readSecret (password),
+        // and readLine would return a phantom queued line without waiting.
+        const code = (await readRaw("2FA code: ", true)).replace(/\s+/g, "");
         if (!code) {
             err("login: empty 2FA code");
             process.exit(2);
