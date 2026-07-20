@@ -41,6 +41,7 @@ import {
     srpVerificationUnauthorizedErrorMessage,
     verifySRP,
 } from "ente-accounts/services/srp";
+import { verifyTwoFactor } from "ente-accounts/services/user";
 import { currentAdapter } from "../../platform/install.ts";
 import type { Dispatcher } from "../dispatch.ts";
 
@@ -100,6 +101,78 @@ const hydrateSession = async (bundle: SessionBundle): Promise<void> => {
     await saveAuthToken(bundle.token);
 
     log.info("hydrateSession: complete");
+};
+
+/**
+ * Recover the bearer token from an encrypted verification response, build the
+ * SessionBundle, and hydrate it. Shared by the two ways a login can succeed:
+ * SRP-with-password (auth.login) and TOTP second factor (auth.verify_totp).
+ * Both hand back the same { id, keyAttributes, encryptedToken } and both
+ * decrypt it with the same password-derived kek — only how the response is
+ * obtained differs. Mirrors ente/web/packages/accounts/services/user.ts's
+ * decryptAndStoreTokenIfNeeded (three-layer decryption).
+ */
+const completeLogin = async (
+    email: string,
+    kek: string,
+    v: { id: number; encryptedToken?: string; keyAttributes?: unknown },
+): Promise<SessionBundle> => {
+    const log = currentAdapter().log;
+
+    if (!v.encryptedToken || !v.keyAttributes) {
+        throw new Error(
+            "verification returned no encryptedToken/keyAttributes",
+        );
+    }
+
+    const ka = v.keyAttributes as {
+        encryptedKey: string;
+        keyDecryptionNonce: string;
+        encryptedSecretKey: string;
+        secretKeyDecryptionNonce: string;
+        publicKey: string;
+    };
+
+    log.info("completeLogin: decrypting masterKey (encryptedKey → kek)");
+    const masterKey = await decryptBox(
+        { encryptedData: ka.encryptedKey, nonce: ka.keyDecryptionNonce },
+        kek,
+    );
+
+    log.info(
+        "completeLogin: decrypting privateKey (encryptedSecretKey → masterKey)",
+    );
+    const privateKey = await decryptBox(
+        {
+            encryptedData: ka.encryptedSecretKey,
+            nonce: ka.secretKeyDecryptionNonce,
+        },
+        masterKey,
+    );
+
+    log.info("completeLogin: opening sealed box (encryptedToken → keypair)");
+    const tokenBytes = await boxSealOpenBytes(v.encryptedToken, {
+        publicKey: ka.publicKey,
+        privateKey,
+    });
+    const token = await toB64URLSafe(tokenBytes);
+    log.info(`completeLogin: token decrypted (${token.length} chars)`);
+
+    const bundle: SessionBundle = {
+        id: v.id,
+        email,
+        token,
+        masterKeyB64: masterKey,
+        publicKey: ka.publicKey,
+        privateKey,
+        keyAttributes: v.keyAttributes,
+    };
+
+    // Persist to adapter.kv + hydrate ente's localStorage/sessionStorage
+    // polyfills so upload + collection code finds the session. See
+    // hydrateSession above for the breakdown.
+    await hydrateSession(bundle);
+    return bundle;
 };
 
 export const registerAuthMethods = (d: Dispatcher): void => {
@@ -206,59 +279,10 @@ export const registerAuthMethods = (d: Dispatcher): void => {
             };
         }
 
-        if (!verification.encryptedToken || !verification.keyAttributes) {
-            throw new Error(
-                "verifySRP returned no encryptedToken/keyAttributes and no 2FA challenge",
-            );
-        }
-
-        // Three-layer decryption to recover the bearer token. Mirrors
-        // ente/web/packages/accounts/services/user.ts:decryptAndStoreTokenIfNeeded.
-        const ka = verification.keyAttributes as {
-            encryptedKey: string;
-            keyDecryptionNonce: string;
-            encryptedSecretKey: string;
-            secretKeyDecryptionNonce: string;
-            publicKey: string;
-        };
-
-        log.info("auth.login: decrypting masterKey (encryptedKey → kek)");
-        const masterKey = await decryptBox(
-            { encryptedData: ka.encryptedKey, nonce: ka.keyDecryptionNonce },
-            kek,
-        );
-
-        log.info("auth.login: decrypting privateKey (encryptedSecretKey → masterKey)");
-        const privateKey = await decryptBox(
-            {
-                encryptedData: ka.encryptedSecretKey,
-                nonce: ka.secretKeyDecryptionNonce,
-            },
-            masterKey,
-        );
-
-        log.info("auth.login: opening sealed box (encryptedToken → keypair)");
-        const tokenBytes = await boxSealOpenBytes(verification.encryptedToken, {
-            publicKey: ka.publicKey,
-            privateKey,
-        });
-        const token = await toB64URLSafe(tokenBytes);
-        log.info(`auth.login: token decrypted (${token.length} chars)`);
-
-        const bundle: SessionBundle = {
-            id: verification.id,
-            email,
-            token,
-            masterKeyB64: masterKey,
-            publicKey: ka.publicKey,
-            privateKey,
-            keyAttributes: verification.keyAttributes,
-        };
-
-        // Persist to adapter.kv + hydrate ente's localStorage/sessionStorage
-        // polyfills so upload + collection code finds the session. See
-        // hydrateSession above for the breakdown.
-        await hydrateSession(bundle);
+        // No 2FA challenge: verifySRP already returned the encrypted token +
+        // key attributes. completeLogin decrypts them with the kek and
+        // hydrates the session (same path the TOTP flow rejoins).
+        const bundle = await completeLogin(email, kek, verification);
 
         return {
             // Legacy shape callers (probe-upload, probe-login) read these
@@ -291,5 +315,52 @@ export const registerAuthMethods = (d: Dispatcher): void => {
         }
         await hydrateSession(bundle);
         return { ok: true, id: bundle.id };
+    });
+
+    // Second half of a 2FA login. When SRP verification returns a TOTP
+    // challenge, auth.login hands back needs_2fa:"totp" with a
+    // twoFactorSessionID and the password-derived kek (kekB64) instead of a
+    // session; the consumer collects the 6-digit code and submits it here.
+    // ente's verifyTwoFactor exchanges (code, sessionID) for the same
+    // { id, keyAttributes, encryptedToken } an SRP success yields, which
+    // completeLogin then decrypts with that kek — so a 2FA login converges on
+    // the exact same SessionBundle as a password-only one.
+    d.register("auth.verify_totp", async (params) => {
+        const log = currentAdapter().log;
+        const { email, sessionID, code, kekB64 } = (params ?? {}) as {
+            email?: string;
+            sessionID?: string;
+            code?: string;
+            kekB64?: string;
+        };
+        if (!email || !sessionID || !code || !kekB64) {
+            throw new Error(
+                "auth.verify_totp: params must be " +
+                    "{ email, sessionID, code, kekB64 } strings",
+            );
+        }
+
+        log.info("auth.verify_totp: verifyTwoFactor");
+        let resp: Awaited<ReturnType<typeof verifyTwoFactor>>;
+        try {
+            resp = await verifyTwoFactor(code.replace(/\s+/g, ""), sessionID);
+        } catch (err) {
+            // The museum answers a wrong or expired code with HTTP 401, which
+            // ente's ensureOk turns into a throw. Surface a stable message.
+            throw new Error(
+                "incorrect or expired 2FA code " +
+                    `(${err instanceof Error ? err.message : String(err)})`,
+            );
+        }
+        log.info("auth.verify_totp: verifyTwoFactor accepted");
+
+        const bundle = await completeLogin(email, kekB64, resp);
+        return {
+            id: bundle.id,
+            userID: bundle.id,
+            token: bundle.token,
+            masterKeyB64: bundle.masterKeyB64,
+            session: bundle,
+        };
     });
 };
