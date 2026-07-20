@@ -107,6 +107,12 @@ describe("argv surface", () => {
         expect(r.stderr).toContain("Method not found");
     });
 
+    test("auth.verify_totp rejects missing params before any network call", () => {
+        const r = run(["call", "auth.verify_totp", "{}"]);
+        expect(r.exitCode).toBe(1);
+        expect(r.stderr).toContain("params must be");
+    });
+
     test("call ping puts ONLY the result on stdout (pipe discipline)", () => {
         const r = run(["call", "ping"]);
         expect(r.exitCode).toBe(0);

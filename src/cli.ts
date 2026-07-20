@@ -178,6 +178,17 @@ interface WhoamiResult {
     fileCount?: number;
 }
 
+// auth.login returns either a completed `session` or, when a second factor is
+// required, `needs_2fa` plus the material auth.verify_totp needs to finish
+// (the two-factor session id and the password-derived kek). auth.verify_totp
+// returns the same completed shape as a password-only auth.login.
+interface LoginResult {
+    needs_2fa?: string;
+    twoFactorSessionID?: string;
+    kekB64?: string;
+    session?: unknown;
+}
+
 export const cliLogin = async (
     d: Dispatcher,
     argv: string[],
@@ -194,18 +205,36 @@ export const cliLogin = async (
         process.exit(2);
     }
 
-    const result = await rpc<{
-        needs_2fa?: string;
-        session?: unknown;
-    }>(d, "auth.login", { email, password });
+    let result = await rpc<LoginResult>(d, "auth.login", { email, password });
 
-    if (result.needs_2fa) {
+    if (result.needs_2fa === "totp") {
+        if (!result.twoFactorSessionID || !result.kekB64) {
+            err(
+                "login: museum requested a 2FA code but returned no session " +
+                    "id (unexpected response shape)",
+            );
+            process.exit(1);
+        }
+        const code = (await readLine("2FA code: ")).replace(/\s+/g, "");
+        if (!code) {
+            err("login: empty 2FA code");
+            process.exit(2);
+        }
+        result = await rpc<LoginResult>(d, "auth.verify_totp", {
+            email,
+            sessionID: result.twoFactorSessionID,
+            code,
+            kekB64: result.kekB64,
+        });
+    } else if (result.needs_2fa) {
+        // passkey (WebAuthn) needs a browser flow we don't drive yet.
         err(
             `this account has ${result.needs_2fa} second-factor enabled; ` +
                 "duckling login does not support it yet",
         );
         process.exit(1);
     }
+
     if (!result.session) {
         err("login: museum returned no session (unexpected response shape)");
         process.exit(1);
